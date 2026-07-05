@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Электронная книга</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: linear-gradient(135deg, #2c1810, #4a2c1a);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  /* Разворот: две картинки 1792x2400 => 3584x2400 => 3:2 */
+  .book {
+    position: relative;
+    width: 90vmin;
+    max-width: 900px;
+    aspect-ratio: 3 / 2;
+    perspective: 2500px;
+  }
+  /* Одна страница (обложка/конец): 1792x2400 => 3:4 */
+  .book.single {
+    aspect-ratio: 3 / 4;
+    width: 60vmin;
+    max-width: 450px;
+  }
+
+  .static-spread {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+    overflow: hidden;
+  }
+  .static-spread .half { width: 50%; height: 100%; overflow: hidden; }
+  .static-spread .half.left  { border-right: 1px solid rgba(0,0,0,0.12); }
+
+  .book.single .static-spread { justify-content: center; }
+  .book.single .static-spread .half { width: 100%; }
+
+  .flipper {
+    position: absolute;
+    top: 0;
+    width: 50%;
+    height: 100%;
+    z-index: 20;
+    transition: transform 0.9s cubic-bezier(0.645, 0.045, 0.355, 1);
+    transform-style: preserve-3d;
+    overflow: hidden;
+    backface-visibility: hidden;
+  }
+  .flipper.right {
+    left: 50%;
+    transform-origin: left center;
+  }
+  .flipper.right.turn { transform: rotateY(-180deg); }
+
+  .flipper.left {
+    left: 0;
+    transform-origin: right center;
+  }
+  .flipper.left.turn { transform: rotateY(180deg); }
+
+  /* Картинки видны ЦЕЛИКОМ (contain), без обрезки */
+  .static-spread .half img,
+  .flipper img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  .flipper .shade {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(to right, rgba(0,0,0,0) 60%, rgba(0,0,0,0.25) 100%);
+    opacity: 0;
+    transition: opacity 0.9s ease;
+  }
+  .flipper.right .shade {
+    background: linear-gradient(to left, rgba(0,0,0,0) 55%, rgba(0,0,0,0.28) 100%);
+  }
+  .flipper.turn .shade { opacity: 1; }
+
+  .book:not(.single)::after {
+    content: "";
+    position: absolute;
+    top: 0; left: 50%;
+    width: 40px; height: 100%;
+    transform: translateX(-50%);
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.25), rgba(0,0,0,0) 70%);
+    pointer-events: none;
+    z-index: 30;
+  }
+
+  .controls {
+    margin-top: 25px;
+    display: flex;
+    gap: 20px;
+    align-items: center;
+  }
+  .controls button {
+    background: #8a5a2b;
+    color: #fff;
+    border: none;
+    padding: 12px 28px;
+    font-size: 18px;
+    border-radius: 30px;
+    cursor: pointer;
+    transition: 0.2s;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+  }
+  .controls button:hover:not(:disabled) { background: #a86a35; transform: translateY(-2px); }
+  .controls button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .counter { color: #f0d9b5; font-size: 16px; min-width: 90px; text-align: center; }
+</style>
+</head>
+<body>
+
+  <div class="book" id="book"></div>
+
+  <div class="controls">
+    <button id="prevBtn">‹ Назад</button>
+    <span class="counter" id="counter"></span>
+    <button id="nextBtn">Вперёд ›</button>
+  </div>
+
+<script>
+  // ==== НАСТРОЙКИ ====
+  const TOTAL_INNER = 20;          // количество внутренних страниц (1..20)
+  const COVER = "oblogka.png";     // обложка
+  const END   = "kones.png";       // конец
+  const FLIP_MS = 900;             // длительность перелистывания (мс)
+  // ===================
+
+  // ==== МЯГКИЙ ЗВУК ПЕРЕЛИСТЫВАНИЯ ====
+  let audioCtx = null;
+  function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  function playFlipSound() {
+    if (!audioCtx) return;
+    const duration = 0.45;
+    const bufferSize = audioCtx.sampleRate * duration;
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+
+    for (let i = 0; i < bufferSize; i++) {
+      const t = i / bufferSize;
+      const fadeIn  = Math.min(1, t * 6);
+      const fadeOut = Math.pow(1 - t, 2.2);
+      const env = fadeIn * fadeOut;
+      data[i] = (Math.random() * 2 - 1) * env * 0.28;
+    }
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 1600;
+    filter.Q.value = 0.4;
+
+    const filter2 = audioCtx.createBiquadFilter();
+    filter2.type = "highpass";
+    filter2.frequency.value = 300;
+
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.35;
+
+    source.connect(filter);
+    filter.connect(filter2);
+    filter2.connect(gain);
+    gain.connect(audioCtx.destination);
+    source.start();
+  }
+  // ====================================
+
+  const screens = [];
+  screens.push({ type: "single", img: COVER });
+  for (let i = 1; i <= TOTAL_INNER; i += 2) {
+    const left = i + ".png";
+    const right = (i + 1 <= TOTAL_INNER) ? (i + 1) + ".png" : null;
+    screens.push({ type: "spread", left, right });
+  }
+  screens.push({ type: "single", img: END });
+
+  const book = document.getElementById("book");
+  const prevBtn = document.getElementById("prevBtn");
+  const nextBtn = document.getElementById("nextBtn");
+  const counter = document.getElementById("counter");
+
+  let current = 0;
+  let animating = false;
+
+  function halfHTML(src) {
+    return src ? `<img src="${src}" alt="">` : "";
+  }
+
+  function renderScreen(index) {
+    const s = screens[index];
+    book.innerHTML = "";
+
+    const stat = document.createElement("div");
+    stat.className = "static-spread";
+
+    if (s.type === "single") {
+      book.classList.add("single");
+      stat.innerHTML = `<div class="half">${halfHTML(s.img)}</div>`;
+    } else {
+      book.classList.remove("single");
+      stat.innerHTML = `
+        <div class="half left">${halfHTML(s.left)}</div>
+        <div class="half right">${halfHTML(s.right)}</div>
+      `;
+    }
+    book.appendChild(stat);
+
+    counter.textContent = (index + 1) + " / " + screens.length;
+    prevBtn.disabled = (index === 0);
+    nextBtn.disabled = (index === screens.length - 1);
+  }
+
+  function getHalf(scr, side) {
+    if (!scr) return null;
+    if (scr.type === "single") return scr.img;
+    return side === "left" ? scr.left : scr.right;
+  }
+
+  function goTo(target, direction) {
+    if (animating || target < 0 || target >= screens.length) return;
+    animating = true;
+    initAudio();
+    playFlipSound();
+
+    const currentScr = screens[current];
+    const targetScr  = screens[target];
+
+    const flip = document.createElement("div");
+    flip.style.zIndex = 40;
+
+    if (direction === "next") {
+      flip.className = "flipper right";
+      const frontImg = getHalf(currentScr, "right");
+      const backImg  = getHalf(targetScr, "left");
+      flip.innerHTML = `
+        <img src="${frontImg || ""}" style="backface-visibility:hidden;">
+        <div class="shade"></div>
+      `;
+      const back = document.createElement("img");
+      back.src = backImg || "";
+      back.style.cssText = "position:absolute;inset:0;transform:rotateY(180deg);backface-visibility:hidden;object-fit:contain;";
+      flip.appendChild(back);
+    } else {
+      flip.className = "flipper left";
+      const frontImg = getHalf(currentScr, "left");
+      const backImg  = getHalf(targetScr, "right");
+      flip.innerHTML = `
+        <img src="${frontImg || ""}" style="backface-visibility:hidden;">
+        <div class="shade"></div>
+      `;
+      const back = document.createElement("img");
+      back.src = backImg || "";
+      back.style.cssText = "position:absolute;inset:0;transform:rotateY(180deg);backface-visibility:hidden;object-fit:contain;";
+      flip.appendChild(back);
+    }
+
+    book.appendChild(flip);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => flip.classList.add("turn"));
+    });
+
+    setTimeout(() => {
+      current = target;
+      renderScreen(current);
+      animating = false;
+    }, FLIP_MS);
+  }
+
+  nextBtn.addEventListener("click", () => goTo(current + 1, "next"));
+  prevBtn.addEventListener("click", () => goTo(current - 1, "prev"));
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight") goTo(current + 1, "next");
+    if (e.key === "ArrowLeft")  goTo(current - 1, "prev");
+  });
+
+  document.addEventListener("click", initAudio, { once: true });
+
+  renderScreen(0);
+</script>
+</body>
+</html>
