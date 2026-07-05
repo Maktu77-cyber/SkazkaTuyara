@@ -10,7 +10,7 @@
   <title>Книга с перелистыванием</title>
   <style>
     :root {
-      --page-height: min(80vh, 480px);
+      --page-height: 480px;
       --page-width: calc(var(--page-height) * 3 / 4);
       --book-width: calc(var(--page-width) * 2);
       --book-height: var(--page-height);
@@ -28,11 +28,32 @@
       user-select: none;
       -webkit-tap-highlight-color: transparent;
       position: fixed; top: 0; left: 0;
-      transition: background 0.3s;
+      transition: background 0.4s;
     }
-    body.fallback-fullscreen {
+
+    /* Полноэкранный режим (свой) */
+    body.fullscreen-active {
       background: #000 !important;
     }
+    body.fullscreen-active .scene {
+      background: #000;
+    }
+    body.fullscreen-active .nav-btn,
+    body.fullscreen-active .top-btn,
+    body.fullscreen-active .page-indicator,
+    body.fullscreen-active .hint {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    body.fullscreen-active .exit-fallback-btn {
+      display: flex;
+    }
+    /* В полноэкранном режиме книга занимает максимум места */
+    body.fullscreen-active .book-wrapper {
+      /* переменные будут переопределены через JS */
+    }
+
     .scene {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       display: flex; align-items: center; justify-content: center;
@@ -142,9 +163,6 @@
       align-items: center; justify-content: center; cursor: pointer;
       backdrop-filter: blur(6px);
     }
-    body.fallback-fullscreen .exit-fallback-btn {
-      display: flex;
-    }
   </style>
 </head>
 <body>
@@ -193,8 +211,9 @@
     const totalScreens = bookData.length;
     let currentScreen = 0;
     let isAnimating = false;
-    let animCallback = null; // храним колбэк текущей анимации
+    let animCallback = null;
     let audioCtx = null;
+    let isFullscreen = false; // свой полноэкранный режим
 
     const scene = document.getElementById('scene');
     const bookWrapper = document.getElementById('bookWrapper');
@@ -213,16 +232,29 @@
     const fullscreenBtn = document.getElementById('fullscreenBtn');
     const exitFallbackBtn = document.getElementById('exitFallbackBtn');
 
+    // Масштабирование книги (адаптивное)
     function resizeBook() {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const scaleW = vw / BASE_W;
-      const scaleH = vh / BASE_H;
-      const scale = Math.min(scaleW, scaleH, 1.2);
-      bookWrapper.style.transform = `scale(${scale})`;
-      document.documentElement.style.setProperty('--book-width', BASE_W * scale + 'px');
-      document.documentElement.style.setProperty('--page-height', BASE_H * scale + 'px');
-      document.documentElement.style.setProperty('--page-width', (BASE_H * 3/4 * scale) + 'px');
+      let vw = window.innerWidth;
+      let vh = window.innerHeight;
+      if (isFullscreen) {
+        // В полноэкранном режиме используем всё пространство
+        const scaleW = vw / BASE_W;
+        const scaleH = vh / BASE_H;
+        const scale = Math.min(scaleW, scaleH);
+        bookWrapper.style.transform = `scale(${scale})`;
+        document.documentElement.style.setProperty('--book-width', BASE_W * scale + 'px');
+        document.documentElement.style.setProperty('--page-height', BASE_H * scale + 'px');
+        document.documentElement.style.setProperty('--page-width', (BASE_H * 3/4 * scale) + 'px');
+      } else {
+        // Обычный режим с небольшим отступом
+        const scaleW = vw / BASE_W;
+        const scaleH = vh / BASE_H;
+        const scale = Math.min(scaleW, scaleH, 1.2);
+        bookWrapper.style.transform = `scale(${scale})`;
+        document.documentElement.style.setProperty('--book-width', BASE_W * scale + 'px');
+        document.documentElement.style.setProperty('--page-height', BASE_H * scale + 'px');
+        document.documentElement.style.setProperty('--page-width', (BASE_H * 3/4 * scale) + 'px');
+      }
     }
 
     function initAudio() {
@@ -271,7 +303,6 @@
       flipBackImg.src=back||'';
     }
 
-    // Принудительная остановка любой анимации
     function abortAnimation() {
       if (!isAnimating && !animCallback) return;
       flipContainer.classList.remove('animating');
@@ -280,13 +311,13 @@
       if (animCallback) {
         const cb = animCallback;
         animCallback = null;
-        cb(); // выполнить сохранённый колбэк (изменение currentScreen и т.д.)
+        cb();
       }
       isAnimating = false;
     }
 
     function animateFlip(deg, cb) {
-      abortAnimation(); // на всякий случай сбрасываем предыдущую
+      abortAnimation();
       isAnimating = true;
       animCallback = cb;
       void flipContainer.offsetWidth;
@@ -301,9 +332,7 @@
       };
       flipContainer.addEventListener('transitionend', onEnd);
       setTimeout(() => {
-        if (flipContainer.classList.contains('animating')) {
-          finishAnimation();
-        }
+        if (flipContainer.classList.contains('animating')) finishAnimation();
       }, 750);
     }
 
@@ -344,7 +373,7 @@
 
     function goToScreen(idx) {
       if (idx < 0 || idx >= totalScreens) return;
-      abortAnimation(); // мгновенно завершить текущую анимацию
+      abortAnimation();
       flipContainer.classList.remove('active','animating','flip-forward','flip-backward');
       flipContainer.style.transition='none';
       flipContainer.style.transform='rotateY(0deg)';
@@ -375,60 +404,39 @@
       }
     }
 
-    // Полноэкранный режим с запасным вариантом
-    function isNativeFullscreenSupported() {
-      return document.fullscreenEnabled || document.webkitFullscreenEnabled;
-    }
-    function enterNativeFullscreen() {
-      const el = document.documentElement;
-      if (el.requestFullscreen) return el.requestFullscreen();
-      else if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
-      else if (el.msRequestFullscreen) return el.msRequestFullscreen();
-      return Promise.reject('Fullscreen API не поддерживается');
-    }
-    function exitNativeFullscreen() {
-      if (document.exitFullscreen) return document.exitFullscreen();
-      else if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
-      else if (document.msExitFullscreen) return document.msExitFullscreen();
-      return Promise.resolve();
-    }
-    function enableFallbackFullscreen() {
-      document.body.classList.add('fallback-fullscreen');
-      fullscreenBtn.style.display = 'none';
+    // Собственный полноэкранный режим
+    function enterFullscreen() {
+      isFullscreen = true;
+      document.body.classList.add('fullscreen-active');
       exitFallbackBtn.style.display = 'flex';
+      resizeBook();
     }
-    function disableFallbackFullscreen() {
-      document.body.classList.remove('fallback-fullscreen');
-      fullscreenBtn.style.display = 'flex';
+
+    function exitFullscreen() {
+      isFullscreen = false;
+      document.body.classList.remove('fullscreen-active');
       exitFallbackBtn.style.display = 'none';
+      resizeBook();
     }
-    function isFallbackActive() {
-      return document.body.classList.contains('fallback-fullscreen');
-    }
+
     function toggleFullscreen() {
-      if (document.fullscreenElement || document.webkitFullscreenElement) {
-        exitNativeFullscreen().catch(() => {});
-        return;
+      if (isFullscreen) {
+        exitFullscreen();
+      } else {
+        enterFullscreen();
       }
-      if (isFallbackActive()) {
-        disableFallbackFullscreen();
-        return;
-      }
-      enterNativeFullscreen().catch(() => {
-        enableFallbackFullscreen();
-      });
     }
 
-    exitFallbackBtn.addEventListener('click', disableFallbackFullscreen);
-
-    // Обработчики событий
+    // Обработчики
     navNext.addEventListener('click', flipForward);
     navPrev.addEventListener('click', flipBackward);
     document.getElementById('clickZoneRight').addEventListener('click', flipForward);
     document.getElementById('clickZoneLeft').addEventListener('click', flipBackward);
     fullscreenBtn.addEventListener('click', toggleFullscreen);
     homeBtn.addEventListener('click', () => goToScreen(0));
+    exitFallbackBtn.addEventListener('click', exitFullscreen);
 
+    // Двойной тап для переключения fullscreen
     let lastTap = 0;
     document.getElementById('book').addEventListener('touchstart', (e) => {
       const now = Date.now();
@@ -451,11 +459,8 @@
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault(); toggleFullscreen();
       } else if (e.key === 'Escape') {
-        if (document.fullscreenElement || document.webkitFullscreenElement) {
-          exitNativeFullscreen();
-        } else if (isFallbackActive()) {
-          disableFallbackFullscreen();
-        }
+        e.preventDefault();
+        if (isFullscreen) exitFullscreen();
       }
     });
 
